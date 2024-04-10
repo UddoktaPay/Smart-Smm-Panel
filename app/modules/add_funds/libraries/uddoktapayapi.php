@@ -2,86 +2,119 @@
 
 class uddoktapayapi {
     
-	private $api_key;
-	private $api_url;
+	private $apiKey;
+    private $apiBaseURL;
 	
-	
-	
-	public function __construct($api_key = null, $api_url = null) {
-		if ($api_key != "" && $api_url != "") {
-			$this->api_key = $api_key;
-			$this->api_url = $api_url;
+	public function __construct($apiKey = null, $apiBaseURL = null) {
+		if ($apiKey != "" && $apiBaseURL != "") {
+			$this->apiKey = $apiKey;
+            $this->apiBaseURL = $this->normalizeBaseURL($apiBaseURL);
 		}
 	}
 
-	/**
-	 *
-	 * Define Payment && Create payment.
-	 *
-	 */
-	public function create_payment($data = ""){
-	    // Setup request to send json via POST.
-        $headers = [];
-        $headers[] = "Content-Type: application/json";
-        $headers[] = "RT-UDDOKTAPAY-API-KEY:" . $this->api_key;
-    
-        // Contact UuddoktaPay Gateway and get URL data
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $this->api_url);
-        curl_setopt($ch, CURLOPT_POST, 1);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-    
-        $response = curl_exec($ch);
-        curl_close($ch);
-        $result = json_decode($response);
-        return $result;
+	private function normalizeBaseURL($apiBaseURL)
+    {
+        $baseURL = rtrim($apiBaseURL, '/');
+        $apiSegmentPosition = strpos($baseURL, '/api');
 
-	}
-
-	/**
-	 *
-	 * Execute payment 
-	 *
-	 */
-	public function execute_payment(){
-
-        $response = file_get_contents('php://input');
-
-        if (!empty($response)) {
-
-            // Decode response data
-            $data     = json_decode($response, true);
-
-            $apiKey = trim($this->api_key);
-            $signature = trim($_SERVER['HTTP_RT_UDDOKTAPAY_API_KEY']);
-
-            // Validate Signature
-            if ($apiKey !== $signature) {
-                return [
-                    'status'    => false,
-                    'message'   => 'Invalid API Signature.'
-                ];
-            }
-
-            if (is_array($data)) {
-                return $data;
-            }
+        if ($apiSegmentPosition !== false) {
+            $baseURL = substr($baseURL, 0, $apiSegmentPosition + 4); // Include '/api'
         }
 
-        return [
-            'status'    => false,
-            'message'   => 'Invalid response from UddoktaPay API.'
+        return $baseURL;
+    }
+
+    private function buildURL($endpoint)
+    {
+        $endpoint = ltrim($endpoint, '/');
+        return $this->apiBaseURL . '/' . $endpoint;
+    }
+
+    public function initPayment($requestData, $apiType = 'checkout-v2')
+    {
+        $apiUrl = $this->buildURL($apiType);
+        $response = $this->sendRequest('POST', $apiUrl, $requestData);
+
+        $this->validateApiResponse($response, 'Payment request failed');
+        return $response['payment_url'];
+    }
+
+    public function verifyPayment($invoiceId)
+    {
+        $verifyUrl = $this->buildURL('verify-payment');
+        $requestData = ['invoice_id' => $invoiceId];
+        return $this->sendRequest('POST', $verifyUrl, $requestData);
+    }
+
+    public function executePayment()
+    {
+        $headerApi = $_SERVER['HTTP_RT_UDDOKTAPAY_API_KEY'] ?? null;
+        $this->validateApiHeader($headerApi);
+
+        $rawInput = trim(file_get_contents('php://input'));
+        $this->validateIpnResponse($rawInput);
+
+        $data = json_decode($rawInput, true);
+        $invoiceId = $data['invoice_id'];
+
+        return $this->verifyPayment($invoiceId);
+    }
+
+    private function sendRequest($method, $url, $data)
+    {
+        $headers = [
+            'RT-UDDOKTAPAY-API-KEY: ' . $this->apiKey,
+            'accept: application/json',
+            'content-type: application/json'
         ];
-	}
+
+        $curl = curl_init();
+
+        curl_setopt_array($curl, [
+            CURLOPT_URL => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_CUSTOMREQUEST => $method,
+            CURLOPT_POSTFIELDS => json_encode($data),
+            CURLOPT_HTTPHEADER => $headers,
+        ]);
+
+        $response = curl_exec($curl);
+        $error = curl_error($curl);
+        curl_close($curl);
+
+        if ($error) {
+            throw new Exception("cURL Error: $error");
+        }
+
+        return json_decode($response, true);
+    }
+
+    private function validateApiHeader($headerApi)
+    {
+        if ($headerApi === null) {
+            throw new Exception("Invalid API Key");
+        }
+
+        $apiKey = trim($this->apiKey);
+
+        if ($headerApi !== $apiKey) {
+            throw new Exception("Unauthorized Action.");
+        }
+    }
+
+    private function validateApiResponse($response, $errorMessage)
+    {
+        if (!isset($response['payment_url'])) {
+            $message = isset($response['message']) ? $response['message'] : $errorMessage;
+            throw new Exception($message);
+        }
+    }
+
+    private function validateIpnResponse($rawInput)
+    {
+        if (empty($rawInput)) {
+            throw new Exception("Invalid response from UddoktaPay API.");
+        }
+    }
 }
-
-
-
-
-
-
-
-
